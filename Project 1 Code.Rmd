@@ -1,0 +1,635 @@
+
+Packages: 
+
+```{r}
+
+```
+
+
+libraries: 
+
+```{r}
+library(readr)
+library(GGally)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(carat)
+library(tidymodels)
+library(recipes)
+library(tidyverse)
+library(patchwork)
+library(discrim)
+library(kableExtra)
+```
+
+***EDA and Cleaning Training dataframe
+
+load training data and check for missing data
+```{r}
+haiti_pixels <- read.csv("HaitiPixels.csv") %>% 
+  as_tibble()
+colSums(is.na(haiti_pixels))
+```
+
+combining all non-blue tarp classes into a single class
+```{r}
+haiti_pixels <- haiti_pixels %>%
+  mutate(Bluetarp = ifelse(Class == "Blue Tarp", "Blue_Tarp", "No_Blue_Tarp"), 
+         Bluetarp = as.factor(Bluetarp))
+
+# Check the new class distribution
+table(haiti_pixels$Bluetarp)
+str(haiti_pixels)
+```
+
+check duplicated data
+```{r}
+#duplicated data
+any(duplicated(haiti_pixels))
+
+haiti_pixels[duplicated(haiti_pixels), ]
+
+#remove duplicated data
+#haiti_pixels <- distinct(haiti_pixels)
+```
+
+
+visualizations: 
+
+
+check distribution of the class column to ensure training df is balanced 
+```{r}
+table(haiti_pixels$Class)
+ggplot(haiti_pixels, aes(x = Class)) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Class Distribution in Training Data", x = "Class", y = "Count") +
+  theme_minimal()
+```
+should use class weights? 
+
+
+Distribution of RGB
+```{r}
+ggplot(haiti_pixels, aes(x = Red, fill = Bluetarp)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Distribution of Red Values by Bluetarp") +
+  theme_minimal()
+
+ggplot(haiti_pixels, aes(x = Green, fill = Bluetarp)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Distribution of Green Values by Bluetarp") +
+  theme_minimal()
+
+ggplot(haiti_pixels, aes(x = Blue, fill = Bluetarp)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Distribution of Blue Values by Bluetarp") +
+  theme_minimal()
+```
+there is significant overlap among classes --> its difficult to separate classes based on the colors
+
+
+
+checking for outliers
+```{r}
+#outlier 
+
+# Boxplot for Red channel
+ggplot(haiti_pixels, aes(y = Red)) +
+  geom_boxplot(fill = "red", alpha = 0.6) +
+  labs(title = "Boxplot of Red Pixel Values", y = "Red") +
+  theme_minimal()
+
+# Similarly for Green and Blue channels:
+ggplot(haiti_pixels, aes(y = Green)) +
+  geom_boxplot(fill = "green", alpha = 0.6) +
+  labs(title = "Boxplot of Green Pixel Values", y = "Green") +
+  theme_minimal()
+
+ggplot(haiti_pixels, aes(y = Blue)) +
+  geom_boxplot(fill = "blue", alpha = 0.6) +
+  labs(title = "Boxplot of Blue Pixel Values", y = "Blue") +
+  theme_minimal()
+
+```
+
+
+```{r}
+sum(haiti_pixels$Red < 0 | haiti_pixels$Red > 255)
+sum(haiti_pixels$Green < 0 | haiti_pixels$Green > 255)
+sum(haiti_pixels$Blue < 0 | haiti_pixels$Blue > 255)
+```
+
+
+correlation between RBS values
+```{r}
+# correlation matrix
+cor_matrix <- cor(haiti_pixels[, c("Red", "Green", "Blue")])
+print(cor_matrix)
+
+# creat cor_df for corr
+cor_df_training <- as.data.frame(as.table(cor_matrix))
+
+ggplot(cor_df_training, aes(x = Var1, y = Var2, fill = Freq)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+  labs(title = "Correlation Between RGB Values", x = "", y = "") +
+  theme_minimal()
+
+```
+correlation is very high --> consider Dimensionality Reduction 
+
+
+
+#Visualize the Distribution of the Numeric Columns
+```{r}
+haiti_pixels %>%
+  gather(key = "variable", value = "value", Red, Green, Blue) %>%
+  ggplot(aes(x = value, fill = variable)) +
+  geom_histogram(bins = 30, alpha = 0.6, position = "identity") +
+  facet_wrap(~variable, scales = "free") +
+  labs(title = "Distribution of Color Channels in Training Data")
+```
+
+```{r}
+ggplot(data.frame(haiti_pixels), aes(x=Class)) +
+  geom_bar()
+
+ggpairs(haiti_pixels, alpha=0.1)
+ggpairs(haiti_pixels[2:5],aes(color = Bluetarp, alpha = 0.5))
+```
+
+
+
+------------------------------------------------------------------------------
+
+
+
+
+
+***EDA and Cleaning Holdout df
+
+
+loading and combining Holdout dfs
+```{r}
+#a function for reading holdout files 
+read_files <- function(file_name){
+  
+  file_path <- file_name  
+  holdout_df <- read_table(file_path, skip = 8, col_names = FALSE, show_col_types = FALSE)
+  colnames(holdout_df) <- c("ID", "X", "Y", "Map_X", "Map_Y", "Lat", "Lon", "Red", "Green", "Blue")
+  
+  return(holdout_df)
+}
+
+#call read_files function for holdout txt files 
+NB_057 <- read_files("057.txt")
+B_067 <- read_files("orthovnir067_ROI_Blue_Tarps.txt")
+NB_067 <- read_files("orthovnir067_ROI_NOT_Blue_Tarps.txt")
+B_069 <- read_files("orthovnir069_ROI_Blue_Tarps.txt")
+NB_069 <- read_files("orthovnir069_ROI_NOT_Blue_Tarps.txt")
+B_078 <- read_files("orthovnir078_ROI_Blue_Tarps.txt")
+NB_078 <- read_files("orthovnir078_ROI_NON_Blue_Tarps.txt")
+
+```
+
+
+```{r}
+#add blue and non-blue class to the data frames 
+NB_057$Bluetarp <- "Non-Blue Tarp"
+B_067$Bluetarp <- "Blue Tarp"
+NB_067$Bluetarp <- "Non-Blue Tarp"
+B_069$Bluetarp <- "Blue Tarp"
+NB_069$Bluetarp <- "Non-Blue Tarp"
+B_078$Bluetarp <- "Blue Tarp"
+NB_078$Bluetarp <- "Non-Blue Tarp"
+
+
+# Merge all holdout dataset into one
+holdout_combined <- bind_rows(
+  NB_057, B_067, NB_067, B_069, NB_069, B_078, NB_078, .id = "Source_File"
+)
+
+
+#change class to factor
+holdout_combined <- holdout_combined %>%
+  mutate(Bluetarp = as.factor(Bluetarp))
+
+unique(holdout_combined$Source_File)
+str(holdout_combined)
+table(holdout_combined$Bluetarp)
+
+# Check for missing values
+colSums(is.na(holdout_combined))
+
+
+```
+
+
+
+cleaning holdout: 
+```{r}
+#missing values 
+missing_values <- colSums(is.na(holdout_combined))
+print("Missing values in combined holdout data:")
+print(missing_values)
+
+
+#duplicated data 
+any(duplicated(holdout_combined))
+
+holdout_combined[duplicated(holdout_combined), ]
+
+#holdout_combined <- distinct(holdout_combined)
+```
+
+
+check distribution of the class column to ensure training df is balanced 
+```{r}
+table(holdout_combined$Bluetarp)
+ggplot(holdout_combined, aes(x = Bluetarp)) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Bluetarp Distribution in Holdout Data", x = "Bluetarp", y = "Count") +
+  theme_minimal()
+```
+
+
+RGB Distribution
+```{r}
+ggplot(holdout_combined, aes(x = Red, fill = Bluetarp)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Distribution of Red Values by Bluetarp (Holdout Data)") +
+  theme_minimal()
+
+ggplot(holdout_combined, aes(x = Green, fill = Bluetarp)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Distribution of Green Values by Bluetarp (Holdout Data)") +
+  theme_minimal()
+
+ggplot(holdout_combined, aes(x = Blue, fill = Bluetarp)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Distribution of Blue Values by Bluetarp (Holdout Data)") +
+  theme_minimal()
+```
+
+
+```{r}
+# correlation matrix
+cor_matrix <- cor(holdout_combined[, c("Red", "Green", "Blue")])
+print(cor_matrix)
+
+# creat cor_df for corr
+cor_df_holdout <- as.data.frame(as.table(cor_matrix))
+
+ggplot(cor_df_training, aes(x = Var1, y = Var2, fill = Freq)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+  labs(title = "Correlation Between RGB Values", x = "", y = "") +
+  theme_minimal()
+
+```
+
+```{r}
+#  Outlier Detection using Boxplots for visual inspection
+library(ggplot2)
+
+ggplot(holdout_combined, aes(y = Red)) +
+  geom_boxplot(fill = "red", alpha = 0.6) +
+  labs(title = "Boxplot for Red Channel (Combined Holdout Data)") +
+  theme_minimal()
+
+ggplot(holdout_combined, aes(y = Green)) +
+  geom_boxplot(fill = "green", alpha = 0.6) +
+  labs(title = "Boxplot for Green Channel (Combined Holdout Data)") +
+  theme_minimal()
+
+ggplot(holdout_combined, aes(y = Blue)) +
+  geom_boxplot(fill = "blue", alpha = 0.6) +
+  labs(title = "Boxplot for Blue Channel (Combined Holdout Data)") +
+  theme_minimal()
+
+```
+
+
+```{r}
+# Check for holdout data:
+sum(holdout_combined$Red < 0 | holdout_combined$Red > 255)
+sum(holdout_combined$Green < 0 | holdout_combined$Green > 255)
+sum(holdout_combined$Blue < 0 | holdout_combined$Blue > 255)
+
+```
+#Visualize the Distribution of the Numeric Columns
+```{r}
+holdout_combined %>%
+  gather(key = "variable", value = "value", Red, Green, Blue) %>%
+  ggplot(aes(x = value, fill = variable)) +
+  geom_histogram(bins = 30, alpha = 0.6, position = "identity") +
+  facet_wrap(~variable, scales = "free") +
+  labs(title = "Distribution of Color Channels in Holdout Data")
+```
+
+
+
+
+
+
+
+-------------------------------------------
+
+**Preprocessing
+
+spliting training data: 
+
+```{r}
+# Split data 
+set.seed(123)
+split <- initial_split(haiti_pixels, prop = 0.8)
+train_data <- training(split)
+test_data <- testing(split)
+
+# splits size
+nrow(train_data)  
+nrow(test_data)   
+```
+
+Handling class imbalance(Train set of Haiti_pixels only)
+```{r}
+# Calculate class weights
+class_weights <- train_data %>%
+  count(Bluetarp) %>%
+  mutate(weight = sum(n) / n)
+
+# Add weights
+train_data <- train_data %>%
+  left_join(class_weights, by = "Bluetarp")
+```
+
+
+
+normalizing 
+```{r}
+#create recipe for normalization and PCA
+pca_recipe <- recipe(Bluetarp ~ Red + Green + Blue, data = train_data) %>% 
+  step_normalize(Red, Green, Blue) %>% 
+  step_pca(Red, Green, Blue, num_comp = tune()) 
+
+```
+
+Zahra's work above
+
+#setup parallel processing
+```{r setup-parallel}
+#| cache: FALSE
+#| message: false
+library(doParallel)
+cl <- makePSOCKcluster(parallel::detectCores(logical = FALSE))
+registerDoParallel(cl)
+```
+
+
+#specifying formula, recipe, and model specification
+
+
+```{r}
+formula <- Bluetarp ~ Red + Green + Blue
+
+bluetarp_recipe <- recipe(formula, data=train_data) %>%
+    step_normalize(all_numeric_predictors())
+```
+
+#also redefine the recipt (no need for PCA in part 1)
+```{r}
+logreg_spec <- logistic_reg(mode="classification", engine="glm")
+lda_spec <- discrim_linear(mode="classification", engine="MASS")
+qda_spec <- discrim_quad(mode="classification", engine="MASS")
+```
+
+#Combine preprocessing steps and models to get workflows for logreg, LDA, and QDA
+
+```{r}
+logreg_wf <- workflow() %>%
+    add_recipe(bluetarp_recipe) %>%
+    add_model(logreg_spec)
+
+lda_wf <- workflow() %>%
+    add_recipe(bluetarp_recipe) %>%
+    add_model(lda_spec)
+
+qda_wf <- workflow() %>%
+    add_recipe(bluetarp_recipe) %>%
+    add_model(qda_spec)
+```
+
+#(FROM MODULE 4 NOTES) Define cross-validation approach 
+
+#10-fold cross-validation using stratified sampling
+#Measure performance using ROC-AUC (also accuracy)
+#Save resample predictions, so that we can build ROC curves using cross-validation results
+
+```{r}
+resamples <- vfold_cv(train_data, v=10, strata=Bluetarp)
+custom_metrics <- metric_set(roc_auc, accuracy)
+cv_control <- control_resamples(save_pred=TRUE)
+```
+
+# Cross-validation
+```{r cross-validation}
+logreg_cv <- fit_resamples(logreg_wf, resamples, metrics=custom_metrics, control=cv_control)
+lda_cv <- fit_resamples(lda_wf, resamples, metrics=custom_metrics, control=cv_control)
+qda_cv <- fit_resamples(qda_wf, resamples, metrics=custom_metrics, control=cv_control)
+```
+
+
+```{r cv-metrics-table}
+cv_metrics <- bind_rows(
+    collect_metrics(logreg_cv) %>%
+        mutate(model="Logistic regression"),
+    collect_metrics(lda_cv) %>%
+        mutate(model="LDA"),
+    collect_metrics(qda_cv) %>%
+        mutate(model="QDA")
+)
+
+cv_metrics %>%
+    select(model, .metric, mean) %>%
+    pivot_wider(names_from=".metric", values_from="mean") %>%
+    knitr::kable(caption="Cross-validation performance metrics", digits=3)
+```
+
+```{r cv-metrics-figure}
+#| fig.cap: Cross-validation performance metrics
+#| fig.width: 6
+#| fig.height: 3
+#| out.width: 75%
+ggplot(cv_metrics, aes(x=mean, y=model, xmin=mean - std_err, xmax=mean + std_err)) +
+    geom_point() +
+    geom_linerange() +
+    facet_wrap(~ .metric)
+```
+
+#CONCULSION FROM THESE GRAPHS: Logistic Regression has highest ROC_AUC and Accuracy, while QDA has similar results, but LDA lags behind significantly.
+
+
+#Cross-validation ROC curves
+
+
+```{r cv-roc-curves}
+#| fig.width: 12
+#| fig.height: 4
+#| fig.cap: ROC curves based on cross-validation predictions
+roc_cv_plot <- function(model_cv, model_name) {
+    cv_predictions <- collect_predictions(model_cv)
+    cv_roc <- cv_predictions %>%
+        roc_curve(truth=Bluetarp, '.pred_Blue_Tarp', event_level="first")
+
+    g <- autoplot(cv_roc) +
+        labs(title=model_name)
+    return(g)
+}
+g1 <- roc_cv_plot(logreg_cv, "Logistic regression")
+g2 <- roc_cv_plot(lda_cv, "LDA")
+g3 <- roc_cv_plot(qda_cv, "QDA")
+g1 + g2 + g3
+```
+
+Overlay the 3 ROC curves
+
+```{r cv-roc-curves-overlay}
+#| fig.width: 5
+#| fig.height: 3
+#| fig.cap: Overlay of cross-validation ROC curves
+roc_cv_data <- function(model_cv) {
+    cv_predictions <- collect_predictions(model_cv)
+    cv_predictions %>%
+        roc_curve(truth=Bluetarp, '.pred_Blue_Tarp', event_level="first")
+}
+bind_rows(
+    roc_cv_data(logreg_cv) %>% mutate(model="Logistic regression"),
+    roc_cv_data(lda_cv) %>% mutate(model="LDA"),
+    roc_cv_data(qda_cv) %>% mutate(model="QDA")
+) %>%
+ggplot(aes(x=1 - specificity, y=sensitivity, color=model)) +
+    geom_line()
+```
+
+
+## Optimize threshold
+Explore the threshold w probably package. Define two functions to look at the effect of threshold selection on performance metrics and the associated confusion matrices:
+```{r}
+library(probably)
+
+threshold_graph <- function(model_cv, model_name) {
+    performance <- probably::threshold_perf(collect_predictions(model_cv), Bluetarp, .pred_Blue_Tarp,
+        thresholds=seq(0.05, 0.95, 0.01), event_level="first",
+        metrics=metric_set(f_meas, accuracy, kap))
+    
+    max_metrics <- performance %>%
+        drop_na() %>%
+        group_by(.metric) %>%
+        filter(.estimate == max(.estimate))
+    
+    g <- ggplot(performance, aes(x=.threshold, y=.estimate, color=.metric)) +
+        geom_line() +
+        geom_point(data=max_metrics, color="black") +
+        labs(title=model_name, x="Threshold", y="Metric value") +
+        coord_cartesian(ylim=c(0, 1))
+    
+    thresholds <- max_metrics %>%
+        select(.metric, .threshold) %>%
+        deframe()
+    
+    return(list(graph=g, thresholds=thresholds))
+}
+
+visualize_conf_mat <- function(model_cv, thresholds, metric) {
+    threshold <- thresholds[metric]
+    cm <- collect_predictions(model_cv) %>%
+        mutate(
+            .pred_class = make_two_class_pred(.pred_Blue_Tarp, c("Blue_Tarp", "No_Blue_Tarp"), threshold=threshold)
+        ) %>%
+        conf_mat(truth=Bluetarp, estimate=.pred_class)
+    
+    autoplot(cm, type="heatmap") +
+        labs(title=sprintf("Threshold %.2f (%s)", threshold, metric))
+}
+
+overview_model <- function(model_cv, model_name) {
+    tg <- threshold_graph(model_cv, model_name)
+    g1 <- visualize_conf_mat(model_cv, tg$thresholds, "accuracy")
+    g2 <- visualize_conf_mat(model_cv, tg$thresholds, "f_meas")
+    g3 <- visualize_conf_mat(model_cv, tg$thresholds, "kap")
+    
+    tg$graph + (g1 / g2 / g3)
+}
+
+```
+
+```{r}
+#| fig.width: 8
+#| fig.height: 12
+#| out.width: 80%
+#| fig.cap: Metrics as a function of model performance
+#| warning: FALSE
+g1 <- overview_model(logreg_cv, "Logistic regression")
+g2 <- overview_model(lda_cv, "LDA")
+g3 <- overview_model(qda_cv, "QDA")
+
+g1 / g2 / g3
+
+```
+
+Determine the accuracy, sensitivity, specificity, and F-measure for each model at the determined thresholds. Which model performs best? How does this compare to the result from the ROC curves?
+
+```{r}
+predict_at_threshold <- function(model, data, threshold) {
+    return(
+        model %>%
+            augment(data) %>%
+            mutate(.pred_class = factor(if_else(.pred_Blue_Tarp >= threshold,
+                                                "Blue_Tarp", "No_Blue_Tarp"), 
+                                        levels = c("Blue_Tarp", "No_Blue_Tarp"))
+            )
+    )
+}
+
+calculate_metrics_at_threshold <- function(model, train, test, model_name, threshold) {
+    bind_rows(
+        # Accuracy of training set
+        bind_cols(
+            model=model_name, dataset="train", threshold=threshold,
+            metrics(predict_at_threshold(model, train, threshold), 
+                    truth=Bluetarp, estimate=.pred_class)
+        ),
+        # AUC of ROC curve of training set
+        bind_cols(
+            model=model_name, dataset="train", threshold=threshold,
+            roc_auc(model %>% augment(train), Bluetarp, .pred_Blue_Tarp, 
+                    event_level="first")
+        ),
+        # Accuracy of test set
+        bind_cols(
+            model=model_name, dataset="test", threshold=threshold,
+            metrics(predict_at_threshold(model, test, threshold), 
+                    truth=Bluetarp, estimate=.pred_class)
+        ),
+        # AUC of ROC curve of test set
+        bind_cols(
+            model=model_name, dataset="test", threshold=threshold,
+            roc_auc(model %>% augment(test), Bluetarp, .pred_Blue_Tarp, 
+                    event_level="first")
+        )
+    )
+}
+
+# Compute metrics for each model
+metrics_at_threshold <- bind_rows(
+    calculate_metrics_at_threshold(logreg_cv, train_data, test_data, "Logistic regression", logreg_threshold),
+    calculate_metrics_at_threshold(lda_cv, train_data, test_data, "LDA", lda_threshold),
+    calculate_metrics_at_threshold(qda_cv, train_data, test_data, "QDA", qda_threshold)
+) %>% arrange(dataset)
+
+metrics_table(metrics_at_threshold, "Performance metrics with optimized threshold")
+
+```
+
+
